@@ -79,7 +79,7 @@ func (p *Plugin) Export(key string, params []string, ctx plugin.ContextProvider)
 
 func init() {
 	fmt.Printf("init()%s", os.Args)
-	plugin.RegisterMetrics(&impl, "Myip", "myip", "Return the external IP address of the host where agent is running.")
+	plugin.RegisterMetrics(&impl, "ZBX_Journald", "zbx_journald", "Read log messages from journald.")
 }
 
 func main() {

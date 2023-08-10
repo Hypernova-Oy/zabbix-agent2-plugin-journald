@@ -1,4 +1,4 @@
-module zbx_journad
+module zbx_journald
 
 go 1.20
 
