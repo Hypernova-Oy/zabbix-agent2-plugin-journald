@@ -1,4 +1,4 @@
-module zbx_journald
+module github.com/Hypernova-Oy/zabbix-agent2-plugin-journald
 
 go 1.20
 

@@ -4,24 +4,34 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"strconv"
 
 	"git.zabbix.com/ap/plugin-support/plugin"
 	"git.zabbix.com/ap/plugin-support/plugin/container"
 )
+
+var VERSION = "0.0.1"
 
 // PluginOptions option from config file
 type PluginOptions struct {
 	//The name of the systemctl service whose journal entries to look for
 	ServiceName string `conf:""`
 
-	// SinceS is the amount of seconds to look for log messages. This should be the same as the interval of running the attached Item.
-	// Defaults to 60s
-	SinceS int `conf:"optional,default=60"`
+	// since is the amount of seconds to look for log messages. This should be the same as the interval of running the attached Item.
+	// See man journalctl, parameter --since
+	// Defaults to -60seconds
+	Since int `conf:"optional,default=-60seconds"`
 
-	// Which log-level to look for?
-	// Defaults to 'ERROR'
-	LogLevel string `conf:"optional,default='ERROR'"`
+	// Which log-level to look for? Your application might not log in a format journald understands, thus you need to use Grep to filter entries.
+	// See man journalctl, parameter --priority
+	// The log levels are the usual syslog log levels as documented in syslog(3), i.e.  "emerg" (0), "alert" (1), "crit" (2), "err" (3), "warning" (4), "notice" (5), "info" (6), "debug" (7).
+	// Defaults to 'err'
+	LogLevel string `conf:"optional,default='err'"`
+
+	// Arbitrary regexp to further filter the log entries. To use this as a generic regexp search tool, just place . as the LogLevel parameter.
+	// If your application doesn't log in the journald-format, use something like \b(FATAL|ERROR|WARN)\b to detect application-specific log levels.
+	// See man journalctl, parameter --grep
+	// Defaults to none
+	Grep string `conf:"optional"`
 }
 
 type Plugin struct {
@@ -31,10 +41,10 @@ type Plugin struct {
 
 var impl Plugin
 
+var plugin_description = "Zabbix Agent Journald plugin v" + VERSION
+
 func (p *Plugin) Export(key string, params []string, ctx plugin.ContextProvider) (result interface{}, err error) {
 	p.Infof("received request to handle %s key with %d parameters", key, len(params))
-
-	p.Errf("Params '%s'", params)
 
 	var serviceName string
 	if len(params) > 0 {
@@ -42,48 +52,63 @@ func (p *Plugin) Export(key string, params []string, ctx plugin.ContextProvider)
 	} else {
 		return nil, fmt.Errorf("Missing parameter 1 ServiceName")
 	}
-	p.Errf("serviceName '%s'", serviceName)
 
-	var sinceS string
+	var since string
 	if len(params) > 1 {
-		_, err = strconv.Atoi(params[1])
-		if err != nil {
-			return nil, fmt.Errorf("Bad parameter 2 SinceS '%s'", err)
-		}
-		sinceS = params[1]
+		since = params[1]
 	} else {
-		sinceS = "60"
+		since = "-60seconds"
 	}
-	p.Errf("sinceS '%d'", sinceS)
 
 	var logLevel string
 	if len(params) > 2 {
 		logLevel = params[2]
 	} else {
-		logLevel = "ERROR"
+		logLevel = "err"
 	}
-	p.Errf("logLevel '%s'", logLevel)
 
-	//cmd := exec.Command("ls", "/usr/")
-	cmd := exec.Command("journalctl", "-u ", serviceName, "--since", "-"+sinceS+"seconds", "-g", "["+logLevel+"]", "--case-sensitive", "-q")
+	var grep string
+	if len(params) > 3 {
+		grep = params[3]
+	}
+
+	commandArgs := make([]string, 0, 10)
+	commandArgs = append(commandArgs, "-q", "-u", serviceName, "--since", since, "--case-sensitive")
+	if logLevel != "" {
+		commandArgs = append(commandArgs, "--priority", logLevel)
+	}
+	if grep != "" {
+		commandArgs = append(commandArgs, "--grep", grep)
+	}
+
+	cmd := exec.Command("journalctl", commandArgs...)
 
 	var logEntries []byte
 	logEntries, err = cmd.CombinedOutput()
-	if err != nil {
-		return nil, fmt.Errorf("Executing the command '%s' failed with '%s'", cmd, err)
+	if exiterr, ok := err.(*exec.ExitError); ok {
+		// journalctl return 1 when there are no log entries matching the regexp filter. Which is not an error, but actually
+		// a good thing.
+		if len(logEntries) == 0 && exiterr.ExitCode() == 1 {
+			return string(""), nil
+		}
 	}
-	p.Errf("logEntries '%s'", logEntries)
+	if err != nil {
+		return nil, fmt.Errorf("Executing the command '%s' failed with '%+v'. %s", cmd, err, logEntries)
+	}
 
 	return string(logEntries), nil
 }
 
 func init() {
-	fmt.Printf("init()%s", os.Args)
 	plugin.RegisterMetrics(&impl, "ZBX_Journald", "zbx_journald", "Read log messages from journald.")
 }
 
 func main() {
-	fmt.Printf("main()%s", os.Args)
+	if len(os.Args) >= 2 && (os.Args[1] == "--version" || os.Args[1] == "-v" || os.Args[1] == "--help" || os.Args[1] == "-h") {
+		fmt.Printf(plugin_description + "\n")
+		os.Exit(0)
+	}
+
 	h, err := container.NewHandler(impl.Name())
 	if err != nil {
 		panic(fmt.Sprintf("failed to create plugin handler %s", err.Error()))
